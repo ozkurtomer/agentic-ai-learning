@@ -4,22 +4,23 @@ from typing import Literal, Optional
 from google import genai
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from tools import add, multiply, divide
-
+from tools import add, multiply, divide, subtract
 from state_store import load_state, save_state
 
 class Decision(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
 
-    status: Literal["ready", "waiting_for_user"]
+    status: Literal["ready", "waiting_for_user", "unsupported"]
     message: str
-    operation: Literal["add", "multiply", "divide"]
+
+    operation: Optional[
+        Literal["add", "multiply", "divide", "subtract"]
+    ]
+
     a: Optional[float]
     b: Optional[float]
 
-
 def validate_decision(decision):
-    
     if decision.a is None:
         return False, "İlk sayı kaç olsun?"
 
@@ -34,30 +35,57 @@ def validate_decision(decision):
 
     return True, "İşlem çalıştırılabilir."
 
-
 client = genai.Client()
 MODEL = "gemini-3.1-flash-lite"
 
 tool_registry = {
     "add": add,
     "multiply": multiply,
-    "divide": divide
+    "divide": divide,
+    "subtract": subtract
 }
 
-state = load_state()
-print("[Yüklenen state]")
+conversation_id = input("Sohbet kimliği: ").strip()
+state = load_state(conversation_id)
+
+print("\n[Yüklenen state]")
 print(json.dumps(state, ensure_ascii=False, indent=2))
 
 instructions = (
-    "Tek bir aritmetik işlem isteğini yapılandır. Hesaplama yapma. "
-    "Sana mevcut görev ve kullanıcının yeni mesajı verilecek. "
-    "Yeni mesaj bekleyen görevi tamamlıyorsa mevcut bilgileri koru "
+    "Kullanıcının YENİ mesajını değerlendir ve tek bir aritmetik "
+    "işlem için yapılandırılmış karar üret. Hesaplama yapma. "
+
+    "Desteklenen işlemler: add (a+b), subtract (a-b), "
+    "multiply (a*b), divide (a/b). "
+
+    "Önce yeni mesajın mevcut göreve bilgi sağlayıp sağlamadığını "
+    "veya desteklenen yeni bir işlem isteyip istemediğini belirle. "
+
+    "Yeni mesaj yalnızca selamlaşma, teşekkür veya konu dışı "
+    "içerikse, bekleyen görev olsa bile status unsupported olsun. "
+    "Bu durumda operation, a ve b null olsun. "
+    "message alanında kısa ve uygun bir Türkçe yanıt ver. "
+
+    "Örnek: Bekleyen görev subtract, a=30, b=null iken "
+    "'merhaba' mesajı gelirse unsupported döndür. "
+    "Aynı görevde '12 olsun' mesajı gelirse "
+    "ready, operation=subtract, a=30, b=12 döndür. "
+    "'Merhaba, 12 olsun' mesajı ise görevle ilgili bilgi içerir; "
+    "yalnızca selamlaşma olarak değerlendirme. "
+
+    "Yeni mesaj bekleyen görevi tamamlıyorsa bilinen değerleri koru "
     "ve yalnızca kullanıcının belirttiği değerleri güncelle. "
-    "Kullanıcı açıkça yeni işlem istiyorsa yeni işlemi esas al. "
+    "Kullanıcı açıkça desteklenen yeni bir işlem istiyorsa "
+    "yeni işlemi esas al. "
+
     "Eksik sayıları uydurma, null bırak. "
-    "Mesaj belirsizse waiting_for_user durumuyla açıklama iste. "
+    "Görevle ilgili mesaj belirsizse waiting_for_user ile "
+    "açıklama iste. "
     "Sayı eksikse veya bölen sıfırsa waiting_for_user kullan. "
-    "Değerler tam ve geçerliyse ready kullan. "
+    "Gerekli değerler tam ve geçerliyse ready kullan. "
+
+    "Çıkarma ve bölmede sayı sırasına dikkat et. "
+    "'30'dan 12 çıkar' için a=30, b=12 olmalı. "
     "message alanını Türkçe yaz."
 )
 
@@ -65,6 +93,7 @@ while True:
     user_message = input("\nSen: ").strip()
 
     if user_message.lower() == "çık":
+        print("Program kapatıldı.")
         break
 
     if not user_message:
@@ -74,9 +103,11 @@ while True:
         state["status"] = "idle"
         state["pending_task"] = None
 
-        save_state(state)
+        save_state(conversation_id, state)
 
         print("Bekleyen işlem iptal edildi.")
+        print("\n[State]")
+        print(json.dumps(state, ensure_ascii=False, indent=2))
         continue
 
     context = {
@@ -109,6 +140,14 @@ while True:
     print("\n[Modelin kararı]")
     print(decision.model_dump_json(indent=2))
 
+    if decision.status == "unsupported":
+        print("\nAsistan:", decision.message)
+        continue
+
+    if decision.operation is None:
+        print("\nGeçerli bir işlem seçilmedi. Görev değiştirilmedi.")
+        continue
+
     can_execute, message = validate_decision(decision)
 
     if not can_execute:
@@ -132,13 +171,10 @@ while True:
 
         print("\nPython sonucu:", result)
 
-        save_state(state)
-
-        print("\n[State]")
-        print(json.dumps(state, ensure_ascii=False, indent=2))
-
         state["status"] = "completed"
         state["pending_task"] = None
+
+    save_state(conversation_id, state)
 
     print("\n[State]")
     print(json.dumps(state, ensure_ascii=False, indent=2))

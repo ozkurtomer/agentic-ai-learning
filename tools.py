@@ -12,3 +12,7 @@ def divide(a: float, b: float) -> float:
         raise ValueError("Bölen sıfır olamaz.")
 
     return a / b
+
+def subtract(a: float, b: float) -> float:
+    """İlk sayıdan ikinci sayıyı çıkartır."""
+    return a - b

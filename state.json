@@ -1,0 +1,9 @@
+{
+  "status": "waiting_for_user",
+  "pending_task": {
+    "operation": "divide",
+    "a": 20.0,
+    "b": null,
+    "question": "İkinci sayı kaç olsun?"
+  }
+}
