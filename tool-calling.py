@@ -1,7 +1,8 @@
 import json
 
-from tools import multiply, add, divide
 from google import genai
+from tools import multiply, add, divide
+
 
 tool_registry = {
     "multiply": multiply,
@@ -60,102 +61,149 @@ divide_tool = {
     }
 }
 
-response = client.interactions.create(
-    model=MODEL,
-    input="12 ve 8 sayılarını uygun hesaplama aracını kullanarak çarp",
-    tools=[multiply_tool, add_tool]
-)
-
 available_tools = [multiply_tool, add_tool, divide_tool]
-
-next_input = (
-    "20'yi 0'e divide aracını kullanarak böl"
-)
 
 previous_id = None
 
 MAX_MODEL_CALLS = 5
 
-for turn in range(MAX_MODEL_CALLS):
-    print(f"\n--- Model çağrısı {turn + 1} ---")
+instructions = (
+    "Sen bir hesaplama asistanısın. Türkçe yanıt ver. "
+    "Hesaplamalarda sunulan araçları kullan. "
+    "Eksik veya geçersiz değerleri kendin değiştirme. "
+    "Devam etmek için yeni bir değer gerekiyorsa kullanıcıya sor. "
+    "Kullanıcının kısa cevaplarını önceki konuşmayla ilişkilendir."
+)
 
-    request = {
-        "model": MODEL,
-        "input": next_input,
-        "tools": available_tools
-    }
+state = {
+    "status": "waiting_for_user",
+    "tool_attempts": 0,
+    "last_tool": None,
+    "last_tool_result": None
+}
 
-    if previous_id is not None:
-        request["previous_interaction_id"] = previous_id
+while True:
+    user_message = input("\nSen: ").strip()
 
-    response = client.interactions.create(**request)
-
-    previous_id = response.id
-    function_results = []
-
-    for step in response.steps:
-        if step.type != "function_call":
-            continue
-
-        print("İstenen araç:", step.name)
-        print("Parametreler:", step.arguments)
-
-        if step.name not in tool_registry:
-            raise ValueError(f"Bilinmeyen araç: {step.name}")
-
-        arguments = step.arguments
-
-        if set(arguments) != {"a", "b"}:
-            raise ValueError("Araç tam olarak a ve b bekliyor.")
-
-        a = arguments["a"]
-        b = arguments["b"]
-
-        if type(a) not in (int, float) or type(b) not in (int, float):
-            raise ValueError("a ve b sayısal olmalı.")
-
-        selected_tool = tool_registry[step.name]
-        try:
-            result = selected_tool(a=a, b=b)
-
-            tool_result = {
-                "ok": True,
-                "value": result
-            }
-
-        except ValueError as error:
-            tool_result = {
-                "ok": False,
-                "error": {
-                    "code": "INVALID_ARGUMENT",
-                    "message": str(error),
-                    "retryable": False
-                }
-            }
-
-        print("Araç sonucu:", tool_result)
-
-        function_results.append({
-            "type": "function_result",
-            "name": step.name,
-            "call_id": step.id,
-            "result": [
-                {
-                    "type": "text",
-                    "text": json.dumps(tool_result, ensure_ascii=False)
-                }
-            ]
-        })
-
-    if function_results:
-        next_input = function_results
-    else:
-        if response.output_text:
-            print("\nSon yanıt:", response.output_text)
-        else:
-            print("\nMetin veya araç isteği gelmedi; duruldu.")
-
+    if user_message.lower() == "çık":
+        state["status"] = "stopped"
+        print("\nProgram kapatıldı.")
         break
 
-else:
-    print("\nModel çağrısı sınırına ulaşıldı; görev tamamlanmamış olabilir.")
+    if not user_message:
+        continue
+
+    state["status"] = "running"
+
+    if previous_id is None:
+        next_input = instructions + "\n\nKullanıcı: " + user_message
+    else:
+        next_input = user_message
+
+    for turn in range(MAX_MODEL_CALLS):
+        print(f"\n--- Model çağrısı {turn + 1} ---")
+
+        request = {
+            "model": MODEL,
+            "input": next_input,
+            "tools": available_tools
+        }
+
+        if previous_id is not None:
+            request["previous_interaction_id"] = previous_id
+
+        response = client.interactions.create(**request)
+        previous_id = response.id
+
+        function_results = []
+
+        for step in response.steps:
+            if step.type != "function_call":
+                continue
+
+            print("İstenen araç:", step.name)
+            print("Parametreler:", step.arguments)
+
+            if step.name not in tool_registry:
+                raise ValueError(f"Bilinmeyen araç: {step.name}")
+
+            arguments = step.arguments
+
+            if set(arguments) != {"a", "b"}:
+                raise ValueError("Araç tam olarak a ve b bekliyor.")
+
+            a = arguments["a"]
+            b = arguments["b"]
+
+            if type(a) not in (int, float) or type(b) not in (int, float):
+                raise ValueError("a ve b sayısal olmalı.")
+
+            selected_tool = tool_registry[step.name]
+
+            state["last_tool"] = step.name
+            state["tool_attempts"] += 1
+
+            try:
+                result = selected_tool(a=a, b=b)
+
+                tool_result = {
+                    "ok": True,
+                    "value": result
+                }
+
+            except ValueError as error:
+                tool_result = {
+                    "ok": False,
+                    "error": {
+                        "code": "INVALID_ARGUMENT",
+                        "message": str(error),
+                        "retryable": False
+                    }
+                }
+
+            state["last_tool_result"] = tool_result
+            print("Araç sonucu:", tool_result)
+
+            function_results.append({
+                "type": "function_result",
+                "name": step.name,
+                "call_id": step.id,
+                "result": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            tool_result,
+                            ensure_ascii=False
+                        )
+                    }
+                ]
+            })
+
+        if function_results:
+            next_input = function_results
+
+        else:
+            print(
+                "\nAsistan:",
+                response.output_text or "Metin yanıtı alınamadı."
+            )
+
+            state["status"] = "waiting_for_user"
+
+            print(
+                "\n[Uygulama durumu]",
+                json.dumps(state, ensure_ascii=False, indent=2)
+            )
+
+            break
+
+    else:
+        state["status"] = "stopped"
+
+        print("\nÇağrı sınırına ulaşıldı. Program durduruldu.")
+        print(
+            "\n[Uygulama durumu]",
+            json.dumps(state, ensure_ascii=False, indent=2)
+        )
+
+        break
