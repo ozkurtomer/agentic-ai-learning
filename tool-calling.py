@@ -1,7 +1,13 @@
 import json
 
-from tools import multiply, add
+from tools import multiply, add, divide
 from google import genai
+
+tool_registry = {
+    "multiply": multiply,
+    "add": add,
+    "divide": divide
+}
 
 client = genai.Client()
 MODEL = "gemini-3.1-flash-lite"
@@ -40,23 +46,34 @@ add_tool = {
     }
 }
 
+divide_tool = {
+    "type": "function",
+    "name": "divide",
+    "description": "a sayısını b sayısına böler. b sıfır olamaz.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "a": {"type": "number"},
+            "b": {"type": "number"}
+        },
+        "required": ["a", "b"]
+    }
+}
+
 response = client.interactions.create(
     model=MODEL,
     input="12 ve 8 sayılarını uygun hesaplama aracını kullanarak çarp",
     tools=[multiply_tool, add_tool]
 )
 
-available_tools = [multiply_tool, add_tool]
+available_tools = [multiply_tool, add_tool, divide_tool]
 
-# İlk çağrıda kullanıcı isteğini göndereceğiz.
 next_input = (
-    "18 ile 25'i çarp, çıkan sonuca 40 ekle. "
-    "Her hesaplama adımında uygun aracı kullan."
+    "20'yi 0'e divide aracını kullanarak böl"
 )
 
 previous_id = None
 
-# En fazla 5 model çağrısı yapacağız.
 MAX_MODEL_CALLS = 5
 
 for turn in range(MAX_MODEL_CALLS):
@@ -68,7 +85,6 @@ for turn in range(MAX_MODEL_CALLS):
         "tools": available_tools
     }
 
-    # İlk çağrıda önceki etkileşim yok.
     if previous_id is not None:
         request["previous_interaction_id"] = previous_id
 
@@ -84,7 +100,7 @@ for turn in range(MAX_MODEL_CALLS):
         print("İstenen araç:", step.name)
         print("Parametreler:", step.arguments)
 
-        if step.name not in ("multiply", "add"):
+        if step.name not in tool_registry:
             raise ValueError(f"Bilinmeyen araç: {step.name}")
 
         arguments = step.arguments
@@ -98,12 +114,26 @@ for turn in range(MAX_MODEL_CALLS):
         if type(a) not in (int, float) or type(b) not in (int, float):
             raise ValueError("a ve b sayısal olmalı.")
 
-        if step.name == "multiply":
-            result = multiply(a=a, b=b)
-        else:
-            result = add(a=a, b=b)
+        selected_tool = tool_registry[step.name]
+        try:
+            result = selected_tool(a=a, b=b)
 
-        print("Yerel sonuç:", result)
+            tool_result = {
+                "ok": True,
+                "value": result
+            }
+
+        except ValueError as error:
+            tool_result = {
+                "ok": False,
+                "error": {
+                    "code": "INVALID_ARGUMENT",
+                    "message": str(error),
+                    "retryable": False
+                }
+            }
+
+        print("Araç sonucu:", tool_result)
 
         function_results.append({
             "type": "function_result",
@@ -112,13 +142,12 @@ for turn in range(MAX_MODEL_CALLS):
             "result": [
                 {
                     "type": "text",
-                    "text": json.dumps({"result": result})
+                    "text": json.dumps(tool_result, ensure_ascii=False)
                 }
             ]
         })
 
     if function_results:
-        # Bir sonraki turda araç sonuçlarını göndereceğiz.
         next_input = function_results
     else:
         if response.output_text:
