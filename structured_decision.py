@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from tools import add, multiply, divide
 
+from state_store import load_state, save_state
 
 class Decision(BaseModel):
     model_config = ConfigDict(strict=True, extra="forbid")
@@ -43,10 +44,9 @@ tool_registry = {
     "divide": divide
 }
 
-state = {
-    "status": "idle",
-    "pending_task": None
-}
+state = load_state()
+print("[Yüklenen state]")
+print(json.dumps(state, ensure_ascii=False, indent=2))
 
 instructions = (
     "Tek bir aritmetik işlem isteğini yapılandır. Hesaplama yapma. "
@@ -73,6 +73,9 @@ while True:
     if user_message.lower() == "iptal":
         state["status"] = "idle"
         state["pending_task"] = None
+
+        save_state(state)
+
         print("Bekleyen işlem iptal edildi.")
         continue
 
@@ -128,6 +131,11 @@ while True:
         )
 
         print("\nPython sonucu:", result)
+
+        save_state(state)
+
+        print("\n[State]")
+        print(json.dumps(state, ensure_ascii=False, indent=2))
 
         state["status"] = "completed"
         state["pending_task"] = None
